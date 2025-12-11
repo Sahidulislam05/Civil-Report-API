@@ -204,7 +204,7 @@ async function run() {
       if (!user) return res.status(404).send({ error: "User not found" });
 
       // Free user limit
-      if (user.role === "citizen" && !user.isPremium) {
+      if (user.role === "citizen" && !user.premium) {
         const count = await issuesCollection.countDocuments({ email });
         if (count >= 3)
           return res.status(403).send({ error: "Free limit reached!" });
@@ -541,47 +541,60 @@ async function run() {
     const user = await usersCollection.findOne({ email });
     res.send({
       role: user.role,
-      premium: user.premium,
-      blocked: user.blocked,
+      premium: user.premium || false,
+      blocked: user.isBlocked || false,
     });
   });
 
   // Create Stripe Checkout Session
-  app.post("/create-checkout-session", verifyJWT, async (req, res) => {
-    try {
-      const { price, email } = req.body;
-
-      const session = await stripe.checkout.sessions.create({
-        line_items: [
-          {
-            price_data: {
-              currency: "usd",
-              product_data: {
-                name: "Premium Subscription",
-                description: "Unlimited issue submission access",
+  app.post(
+    "/create-checkout-session",
+    verifyJWT,
+    verifyBlockedUser,
+    async (req, res) => {
+      try {
+        const { price, email } = req.body;
+        const session = await stripe.checkout.sessions.create({
+          line_items: [
+            {
+              price_data: {
+                currency: "usd",
+                product_data: {
+                  name: "Premium Subscription",
+                  description: "Unlimited issue submission access",
+                },
+                unit_amount: price * 100,
               },
-              unit_amount: price * 100,
+              quantity: 1,
             },
-            quantity: 1,
-          },
-        ],
-        customer_email: email,
-        mode: "payment",
-        metadata: { email },
-        success_url: `${process.env.CLIENT_DOMAIN}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: `${process.env.CLIENT_DOMAIN}/profile?success=false`,
-      });
+          ],
+          customer_email: email,
+          mode: "payment",
+          metadata: { email },
+          success_url: `${process.env.CLIENT_DOMAIN}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+          cancel_url: `${process.env.CLIENT_DOMAIN}/profile?success=false`,
+        });
 
-      res.send({ url: session.url });
-    } catch (error) {
-      console.log(" Checkout Error:", error);
-      res.status(500).send({ error: error.message });
+        res.send({ url: session.url });
+      } catch (error) {
+        console.log(" Checkout Error:", error);
+        res.status(500).send({ error: error.message });
+      }
     }
-  });
+  );
 
   app.post("/session-status", verifyJWT, async (req, res) => {
     try {
       const { sessionId } = req.body;
+      const userEmail = req.tokenEmail;
+
+      const user = await usersCollection.findOne({ email: userEmail });
+
+      if (user?.isBlocked) {
+        return res.status(403).send({
+          error: "User is blocked. Payment not allowed.",
+        });
+      }
 
       const session = await stripe.checkout.sessions.retrieve(sessionId);
 
@@ -592,28 +605,23 @@ async function run() {
       const email = session.metadata.email;
       const transactionId = session.payment_intent;
 
-      // Prevent duplicate recording
       const existPayment = await paymentsCollection.findOne({ transactionId });
 
       if (!existPayment) {
-        const paymentInfo = {
+        await paymentsCollection.insertOne({
           email,
           transactionId,
           amount: session.amount_total / 100,
           type: "subscription",
           status: "complete",
           date: new Date(),
-        };
+        });
 
-        await paymentsCollection.insertOne(paymentInfo);
-
-        // Make user premium
         await usersCollection.updateOne({ email }, { $set: { premium: true } });
       }
 
       return res.send({ success: true, premium: true });
     } catch (error) {
-      console.log(" Session Status Error:", error);
       res.status(500).send({ error: error.message });
     }
   });
