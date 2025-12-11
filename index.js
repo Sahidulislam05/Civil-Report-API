@@ -3,6 +3,7 @@ const express = require("express");
 const cors = require("cors");
 require("dotenv").config();
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
+const PDFDocument = require("pdfkit");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
 // Firebase Admin init
@@ -190,6 +191,25 @@ async function run() {
     res.send(result);
   });
 
+  app.get("/staff/today-tasks", verifyJWT, async (req, res) => {
+    const email = req.tokenEmail;
+    const staff = await usersCollection.findOne({ email });
+    if (!staff) return res.status(404).send({ message: "Staff not found" });
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0); // start of today
+
+    const tasks = await issuesCollection
+      .find({
+        "assignedTo._id": staff._id.toString(),
+        createdAt: { $gte: today }, // tasks created today
+      })
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    res.send(tasks);
+  });
+
   // ISSUES
 
   app.post("/issues", verifyJWT, verifyBlockedUser, async (req, res) => {
@@ -197,17 +217,19 @@ async function run() {
       const data = req.body;
       const email = req.tokenEmail;
 
-      if (!email)
-        return res.status(400).send({ error: "Email missing in token" });
-
       const user = await usersCollection.findOne({ email });
-      if (!user) return res.status(404).send({ error: "User not found" });
+      if (!user) {
+        return res.status(403).send({ error: true, message: "User not found" });
+      }
 
       // Free user limit
       if (user.role === "citizen" && !user.premium) {
         const count = await issuesCollection.countDocuments({ email });
-        if (count >= 3)
-          return res.status(403).send({ error: "Free limit reached!" });
+        if (count > 3) {
+          return res
+            .status(403)
+            .send({ error: true, message: "Free user limit reached!" });
+        }
       }
 
       data.status = "pending";
@@ -223,9 +245,8 @@ async function run() {
         time: new Date(),
       });
 
-      res.send(result);
+      res.send({ success: true, data: result });
     } catch (error) {
-      console.error(error);
       res.status(500).send({ error: true, message: error.message });
     }
   });
@@ -736,35 +757,57 @@ async function run() {
   app.get("/", (req, res) => res.send("Public Issue API Running..."));
 }
 
-//  DOWNLOAD INVOICE PDF
-// const PDFDocument = require("pdfkit");
-// app.get("/payment/:id/invoice", verifyJWT, async (req, res) => {
-//   try {
-//     const id = req.params.id;
-//     const payment = await paymentsCollection.findOne({ _id: new ObjectId(id) });
-//     if (!payment) return res.status(404).send({ error: "Payment not found" });
+// Download invoice by payment ID
 
-//     const doc = new PDFDocument();
-//     res.setHeader("Content-Type", "application/pdf");
-//     res.setHeader(
-//       "Content-Disposition",
-//       `attachment; filename=invoice_${id}.pdf`
-//     );
+//
+app.get("/payment/:id/invoice", verifyJWT, async (req, res) => {
+  try {
+    const { id } = req.params;
 
-//     doc.fontSize(20).text("Invoice", { align: "center" });
-//     doc.moveDown();
-//     doc.fontSize(14).text(`Payment ID: ${payment._id}`);
-//     doc.text(`User Email: ${payment.email}`);
-//     doc.text(`Amount: ${payment.amount} tk`);
-//     doc.text(`Type: ${payment.type}`);
-//     doc.text(`Date: ${payment.createdAt}`);
+    // Validate MongoDB ObjectId
+    if (!id.match(/^[0-9a-fA-F]{24}$/)) {
+      return res.status(400).send({ error: "Invalid Payment ID" });
+    }
 
-//     doc.end();
-//     doc.pipe(res);
-//   } catch (err) {
-//     res.status(500).send({ error: err.message });
-//   }
-// });
+    const payment = await paymentsCollection.findOne({ _id: new ObjectId(id) });
+
+    if (!payment) {
+      return res.status(404).send({ error: "Payment not found" });
+    }
+
+    // Create PDF
+    const PDFDocument = require("pdfkit");
+    const doc = new PDFDocument();
+
+    // Set response headers
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename=invoice_${id}.pdf`
+    );
+
+    // Pipe PDF to response
+    doc.pipe(res);
+
+    // Add invoice content
+    doc.fontSize(20).text("Invoice", { align: "center" });
+    doc.moveDown();
+    doc.fontSize(14).text(`Payment ID: ${payment._id.toString()}`);
+    doc.text(`Email: ${payment.email || "N/A"}`);
+    doc.text(`Amount: ${payment.amount != null ? payment.amount : 0} tk`);
+    doc.text(`Type: ${payment.type || "N/A"}`);
+    doc.text(`Status: ${payment.status || "complete"}`);
+    doc.text(
+      `Date: ${payment.date ? new Date(payment.date).toLocaleString() : "N/A"}`
+    );
+
+    doc.end(); // Finalize PDF
+  } catch (err) {
+    console.error("Invoice generation error:", err);
+    res.status(500).send({ error: "Failed to generate invoice" });
+  }
+});
+
 // Error handler
 app.use((err, req, res, next) => {
   console.error(err);
