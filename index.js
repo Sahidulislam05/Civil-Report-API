@@ -541,6 +541,22 @@ async function run() {
       res.status(500).send({ error: err.message });
     }
   });
+
+  // Latest resolved issues
+  app.get("/issues/resolved/latest", async (req, res) => {
+    try {
+      const issues = await issuesCollection
+        .find({ status: "resolved" })
+        .sort({ updatedAt: -1, createdAt: -1 })
+        .limit(6)
+        .toArray();
+
+      res.send(issues);
+    } catch (err) {
+      res.status(500).send({ error: err.message });
+    }
+  });
+
   // PAYMENT
 
   app.post("/payment", verifyJWT, async (req, res) => {
@@ -754,59 +770,63 @@ async function run() {
     });
   });
 
+  // Download invoice by payment ID
+
+  //
+  app.get("/payment/:id/invoice", verifyJWT, async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      // Validate MongoDB ObjectId
+      if (!id.match(/^[0-9a-fA-F]{24}$/)) {
+        return res.status(400).send({ error: "Invalid Payment ID" });
+      }
+
+      const payment = await paymentsCollection.findOne({
+        _id: new ObjectId(id),
+      });
+
+      if (!payment) {
+        return res.status(404).send({ error: "Payment not found" });
+      }
+
+      // Create PDF
+      const PDFDocument = require("pdfkit");
+      const doc = new PDFDocument();
+
+      // Set response headers
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename=invoice_${id}.pdf`
+      );
+
+      // Pipe PDF to response
+      doc.pipe(res);
+
+      // Add invoice content
+      doc.fontSize(20).text("Invoice", { align: "center" });
+      doc.moveDown();
+      doc.fontSize(14).text(`Payment ID: ${payment._id.toString()}`);
+      doc.text(`Email: ${payment.email || "N/A"}`);
+      doc.text(`Amount: ${payment.amount != null ? payment.amount : 0} tk`);
+      doc.text(`Type: ${payment.type || "N/A"}`);
+      doc.text(`Status: ${payment.status || "complete"}`);
+      doc.text(
+        `Date: ${
+          payment.date ? new Date(payment.date).toLocaleString() : "N/A"
+        }`
+      );
+
+      doc.end(); // Finalize PDF
+    } catch (err) {
+      console.error("Invoice generation error:", err);
+      res.status(500).send({ error: "Failed to generate invoice" });
+    }
+  });
+
   app.get("/", (req, res) => res.send("Public Issue API Running..."));
 }
-
-// Download invoice by payment ID
-
-//
-app.get("/payment/:id/invoice", verifyJWT, async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    // Validate MongoDB ObjectId
-    if (!id.match(/^[0-9a-fA-F]{24}$/)) {
-      return res.status(400).send({ error: "Invalid Payment ID" });
-    }
-
-    const payment = await paymentsCollection.findOne({ _id: new ObjectId(id) });
-
-    if (!payment) {
-      return res.status(404).send({ error: "Payment not found" });
-    }
-
-    // Create PDF
-    const PDFDocument = require("pdfkit");
-    const doc = new PDFDocument();
-
-    // Set response headers
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader(
-      "Content-Disposition",
-      `attachment; filename=invoice_${id}.pdf`
-    );
-
-    // Pipe PDF to response
-    doc.pipe(res);
-
-    // Add invoice content
-    doc.fontSize(20).text("Invoice", { align: "center" });
-    doc.moveDown();
-    doc.fontSize(14).text(`Payment ID: ${payment._id.toString()}`);
-    doc.text(`Email: ${payment.email || "N/A"}`);
-    doc.text(`Amount: ${payment.amount != null ? payment.amount : 0} tk`);
-    doc.text(`Type: ${payment.type || "N/A"}`);
-    doc.text(`Status: ${payment.status || "complete"}`);
-    doc.text(
-      `Date: ${payment.date ? new Date(payment.date).toLocaleString() : "N/A"}`
-    );
-
-    doc.end(); // Finalize PDF
-  } catch (err) {
-    console.error("Invoice generation error:", err);
-    res.status(500).send({ error: "Failed to generate invoice" });
-  }
-});
 
 // Error handler
 app.use((err, req, res, next) => {
