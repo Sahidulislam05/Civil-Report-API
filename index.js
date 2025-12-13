@@ -55,7 +55,7 @@ const client = new MongoClient(MONGO_URI, {
 });
 
 async function run() {
-  await client.connect();
+  
   console.log("MongoDB Connected");
 
   const db = client.db("civil-report");
@@ -885,8 +885,6 @@ async function run() {
   });
 
   // Download invoice by payment ID
-
-  //
   app.get("/payment/:id/invoice", verifyJWT, async (req, res) => {
     try {
       const { id } = req.params;
