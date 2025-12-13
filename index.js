@@ -297,6 +297,24 @@ async function run() {
     res.send(issues);
   });
 
+  app.get("/issues/:id", verifyJWT, async (req, res) => {
+    try {
+      const id = req.params.id;
+
+      const issue = await issuesCollection.findOne({
+        _id: new ObjectId(id),
+      });
+
+      if (!issue) {
+        return res.status(404).send({ error: "Issue not found" });
+      }
+
+      res.send(issue);
+    } catch (err) {
+      res.status(500).send({ error: err.message });
+    }
+  });
+
   // Assign issue or update issue
   app.patch("/issues/:id", verifyJWT, verifyBlockedUser, async (req, res) => {
     const id = req.params.id;
@@ -626,42 +644,138 @@ async function run() {
       const userEmail = req.tokenEmail;
 
       const user = await usersCollection.findOne({ email: userEmail });
-
       if (user?.isBlocked) {
-        return res.status(403).send({
-          error: "User is blocked. Payment not allowed.",
-        });
+        return res
+          .status(403)
+          .send({ error: "User is blocked. Payment not allowed." });
       }
 
+      // Retrieve Stripe session
       const session = await stripe.checkout.sessions.retrieve(sessionId);
 
       if (session.payment_status !== "paid") {
-        return res.send({ success: false, premium: false });
+        return res.send({ success: false, boosted: false });
       }
 
-      const email = session.metadata.email;
-      const transactionId = session.payment_intent;
+      const metadata = session.metadata;
 
-      const existPayment = await paymentsCollection.findOne({ transactionId });
+      // Handle issue boost
+      if (metadata.type === "issue-boost") {
+        const issueId = metadata.issueId;
+        const email = metadata.email;
 
-      if (!existPayment) {
+        // Update issue priority
+        await issuesCollection.updateOne(
+          { _id: new ObjectId(issueId) },
+          { $set: { priority: "high" } }
+        );
+
+        // Add timeline entry
+        await timelineCollection.insertOne({
+          issueId,
+          message: "Issue boosted via payment",
+          updatedBy: email,
+          status: "boosted",
+          time: new Date(),
+        });
+
+        // Record payment
         await paymentsCollection.insertOne({
           email,
-          transactionId,
+          transactionId: session.payment_intent,
           amount: session.amount_total / 100,
-          type: "subscription",
+          type: "boost",
+          issueId,
           status: "complete",
           date: new Date(),
         });
 
-        await usersCollection.updateOne({ email }, { $set: { premium: true } });
+        return res.send({ success: true, boosted: true, issueId });
       }
 
-      return res.send({ success: true, premium: true });
-    } catch (error) {
-      res.status(500).send({ error: error.message });
+      // Handle subscription (if needed)
+      if (metadata.type === "subscription") {
+        const transactionId = session.payment_intent;
+        const existPayment = await paymentsCollection.findOne({
+          transactionId,
+        });
+
+        if (!existPayment) {
+          await paymentsCollection.insertOne({
+            email: metadata.email,
+            transactionId,
+            amount: session.amount_total / 100,
+            type: "subscription",
+            status: "complete",
+            date: new Date(),
+          });
+
+          await usersCollection.updateOne(
+            { email: metadata.email },
+            { $set: { premium: true } }
+          );
+        }
+
+        return res.send({ success: true, premium: true });
+      }
+
+      res.send({ success: false });
+    } catch (err) {
+      console.error("Session Status Error:", err);
+      res.status(500).send({ error: err.message });
     }
   });
+
+  // Boost Payment
+  app.post(
+    "/issues/:id/boost-checkout",
+    verifyJWT,
+    verifyBlockedUser,
+    async (req, res) => {
+      try {
+        const { id } = req.params;
+        const email = req.tokenEmail;
+
+        // Find the issue
+        const issue = await issuesCollection.findOne({ _id: new ObjectId(id) });
+        if (!issue) return res.status(404).send({ error: "Issue not found" });
+        if (issue.priority === "high")
+          return res.status(400).send({ error: "Issue already boosted" });
+
+        // Create Stripe Checkout Session
+        const session = await stripe.checkout.sessions.create({
+          payment_method_types: ["card"],
+          line_items: [
+            {
+              price_data: {
+                currency: "bdt",
+                product_data: {
+                  name: "Issue Boost",
+                  description: `Boost issue: ${issue.title}`,
+                },
+                unit_amount: 100 * 100, // 100 BDT
+              },
+              quantity: 1,
+            },
+          ],
+          mode: "payment",
+          customer_email: email,
+          metadata: {
+            type: "issue-boost",
+            issueId: id,
+            email, // important for timeline
+          },
+          success_url: `${process.env.CLIENT_DOMAIN}/boost-success?session_id={CHECKOUT_SESSION_ID}`,
+          cancel_url: `${process.env.CLIENT_DOMAIN}/issue/${id}`,
+        });
+
+        res.send({ url: session.url });
+      } catch (err) {
+        console.error("Boost Checkout Error:", err);
+        res.status(500).send({ error: err.message });
+      }
+    }
+  );
 
   // Citizen STATS
 
