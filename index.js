@@ -214,6 +214,53 @@ async function run() {
       res.send(tasks);
     });
 
+    // Firebase
+    app.post(
+      "/admin/create-staff",
+      verifyJWT,
+      verifyAdmin,
+      async (req, res) => {
+        const { name, email, phone, password } = req.body;
+
+        if (!name || !email || !password) {
+          return res
+            .status(400)
+            .send({ error: "Name, email & password required" });
+        }
+
+        try {
+          // 1. Create user in Firebase Auth
+          const firebaseUser = await admin.auth().createUser({
+            email,
+            password,
+            displayName: name,
+          });
+
+          // 2. Add user to MongoDB
+          const now = new Date().toISOString();
+          const doc = {
+            _id: firebaseUser.uid,
+            name,
+            email,
+            phone: phone || "",
+            role: "staff",
+            created_at: now,
+          };
+
+          await usersCollection.updateOne(
+            { email },
+            { $set: doc },
+            { upsert: true }
+          );
+
+          res.send({ success: true, firebaseUser });
+        } catch (error) {
+          console.error(error);
+          res.status(500).send({ error: error.code || error.message });
+        }
+      }
+    );
+
     // ISSUES
 
     app.post("/issues", verifyJWT, verifyBlockedUser, async (req, res) => {
@@ -633,69 +680,156 @@ async function run() {
       verifyBlockedUser,
       async (req, res) => {
         try {
-          const { price, email } = req.body;
+          const email = req.tokenEmail;
           const session = await stripe.checkout.sessions.create({
+            payment_method_types: ["card"],
             line_items: [
               {
                 price_data: {
-                  currency: "usd",
+                  currency: "bdt",
                   product_data: {
                     name: "Premium Subscription",
                     description: "Unlimited issue submission access",
                   },
-                  unit_amount: price * 100,
+                  unit_amount: 1000 * 100,
                 },
                 quantity: 1,
               },
             ],
-            customer_email: email,
             mode: "payment",
-            metadata: { email },
+            customer_email: email,
+            metadata: {
+              type: "premium-subscription",
+              email,
+            },
             success_url: `${process.env.CLIENT_DOMAIN}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
             cancel_url: `${process.env.CLIENT_DOMAIN}/profile?success=false`,
           });
 
           res.send({ url: session.url });
         } catch (error) {
-          console.log(" Checkout Error:", error);
+          console.error("Checkout Error:", error);
           res.status(500).send({ error: error.message });
         }
       }
     );
 
+    // app.post("/session-status", verifyJWT, async (req, res) => {
+    //   try {
+    //     const { sessionId } = req.body;
+    //     const userEmail = req.tokenEmail;
+
+    //     const user = await usersCollection.findOne({ email: userEmail });
+    //     if (user?.isBlocked) {
+    //       return res
+    //         .status(403)
+    //         .send({ error: "User is blocked. Payment not allowed." });
+    //     }
+
+    //     // Retrieve Stripe session
+    //     const session = await stripe.checkout.sessions.retrieve(sessionId);
+
+    //     if (session.payment_status !== "paid") {
+    //       return res.send({ success: false, boosted: false });
+    //     }
+
+    //     const metadata = session.metadata;
+
+    //     // Handle issue boost
+    //     if (metadata.type === "issue-boost") {
+    //       const issueId = metadata.issueId;
+    //       const email = metadata.email;
+
+    //       // Update issue priority
+    //       await issuesCollection.updateOne(
+    //         { _id: new ObjectId(issueId) },
+    //         { $set: { priority: "high" } }
+    //       );
+
+    //       // Add timeline entry
+    //       await timelineCollection.insertOne({
+    //         issueId,
+    //         message: "Issue boosted via payment",
+    //         updatedBy: email,
+    //         status: "boosted",
+    //         time: new Date(),
+    //       });
+
+    //       // Record payment
+    //       await paymentsCollection.insertOne({
+    //         email,
+    //         transactionId: session.payment_intent,
+    //         amount: session.amount_total / 100,
+    //         type: "boost",
+    //         issueId,
+    //         status: "complete",
+    //         date: new Date(),
+    //       });
+
+    //       return res.send({ success: true, boosted: true, issueId });
+    //     }
+
+    //     // Handle subscription (if needed)
+    //     if (metadata.type === "premium-subscription") {
+    //       const transactionId = session.payment_intent;
+    //       const existPayment = await paymentsCollection.findOne({
+    //         transactionId,
+    //       });
+
+    //       if (!existPayment) {
+    //         await paymentsCollection.insertOne({
+    //           email: metadata.email,
+    //           transactionId,
+    //           amount: session.amount_total / 100,
+    //           type: "subscription",
+    //           status: "complete",
+    //           date: new Date(),
+    //         });
+
+    //         await usersCollection.updateOne(
+    //           { email: metadata.email },
+    //           { $set: { premium: true } }
+    //         );
+    //       }
+
+    //       return res.send({ success: true, premium: true });
+    //     }
+
+    //     res.send({ success: false });
+    //   } catch (err) {
+    //     console.error("Session Status Error:", err);
+    //     res.status(500).send({ error: err.message });
+    //   }
+    // });
+
+    // Boost Payment
+
     app.post("/session-status", verifyJWT, async (req, res) => {
       try {
         const { sessionId } = req.body;
         const userEmail = req.tokenEmail;
-
-        const user = await usersCollection.findOne({ email: userEmail });
-        if (user?.isBlocked) {
+        if (!sessionId) {
           return res
-            .status(403)
-            .send({ error: "User is blocked. Payment not allowed." });
+            .status(400)
+            .send({ success: false, message: "Session ID required" });
         }
 
         // Retrieve Stripe session
         const session = await stripe.checkout.sessions.retrieve(sessionId);
 
+        // Check if payment is complete
         if (session.payment_status !== "paid") {
-          return res.send({ success: false, boosted: false });
+          return res.send({ success: false, message: "Payment not completed" });
         }
 
-        const metadata = session.metadata;
+        const { type, email, issueId } = session.metadata;
 
-        // Handle issue boost
-        if (metadata.type === "issue-boost") {
-          const issueId = metadata.issueId;
-          const email = metadata.email;
-
-          // Update issue priority
+        if (type === "issue-boost") {
           await issuesCollection.updateOne(
             { _id: new ObjectId(issueId) },
             { $set: { priority: "high" } }
           );
 
-          // Add timeline entry
           await timelineCollection.insertOne({
             issueId,
             message: "Issue boosted via payment",
@@ -704,9 +838,8 @@ async function run() {
             time: new Date(),
           });
 
-          // Record payment
           await paymentsCollection.insertOne({
-            email,
+            email: userEmail,
             transactionId: session.payment_intent,
             amount: session.amount_total / 100,
             type: "boost",
@@ -715,19 +848,21 @@ async function run() {
             date: new Date(),
           });
 
-          return res.send({ success: true, boosted: true, issueId });
+          return res.send({ success: true, boosted: true });
         }
 
-        // Handle subscription (if needed)
-        if (metadata.type === "subscription") {
+        if (type === "premium-subscription") {
           const transactionId = session.payment_intent;
+
+          // Avoid duplicate payment entry
           const existPayment = await paymentsCollection.findOne({
             transactionId,
           });
 
           if (!existPayment) {
+            // Insert payment record
             await paymentsCollection.insertOne({
-              email: metadata.email,
+              email,
               transactionId,
               amount: session.amount_total / 100,
               type: "subscription",
@@ -735,8 +870,9 @@ async function run() {
               date: new Date(),
             });
 
+            // Update user premium status
             await usersCollection.updateOne(
-              { email: metadata.email },
+              { email: userEmail },
               { $set: { premium: true } }
             );
           }
@@ -744,14 +880,15 @@ async function run() {
           return res.send({ success: true, premium: true });
         }
 
-        res.send({ success: false });
+        // Default response if type not recognized
+        res.send({ success: false, message: "Invalid payment type" });
       } catch (err) {
         console.error("Session Status Error:", err);
         res.status(500).send({ error: err.message });
       }
     });
 
-    // Boost Payment
+    // Boost payment
     app.post(
       "/issues/:id/boost-checkout",
       verifyJWT,
@@ -977,6 +1114,8 @@ async function run() {
 
 run().catch((err) => console.error(err));
 
-app.get("/", (req, res) => res.send("Public Issue API Running..."));
+app.get("/", (req, res) => res.send("Public Report API Running..."));
 
-// app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+
+module.exports = app;
