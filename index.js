@@ -18,10 +18,11 @@ admin.initializeApp({
 });
 
 const app = express();
+
 app.use(express.json());
 app.use(
   cors({
-    origin: ["http://localhost:5173"],
+    origin: ["http://localhost:5173", "https://civil-report.vercel.app"],
     credentials: true,
   })
 );
@@ -310,7 +311,6 @@ async function run() {
     app.get("/issues/:id", verifyJWT, async (req, res) => {
       try {
         const id = req.params.id;
-
         const issue = await issuesCollection.findOne({
           _id: new ObjectId(id),
         });
@@ -979,4 +979,4 @@ run().catch((err) => console.error(err));
 
 app.get("/", (req, res) => res.send("Public Issue API Running..."));
 
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+// app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
