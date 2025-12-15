@@ -689,6 +689,7 @@ async function run() {
       }
     );
 
+    // 2 Payment session status
     app.post("/session-status", async (req, res) => {
       try {
         const { sessionId } = req.body;
