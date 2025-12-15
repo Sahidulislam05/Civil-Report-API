@@ -237,7 +237,6 @@ async function run() {
     );
 
     // ISSUES
-
     app.post("/issues", verifyJWT, verifyBlockedUser, async (req, res) => {
       try {
         const data = req.body;
@@ -638,6 +637,17 @@ async function run() {
       res.send(list);
     });
 
+    app.get("/my-payments", verifyJWT, async (req, res) => {
+      const email = req.tokenEmail;
+
+      const payments = await paymentsCollection
+        .find({ email })
+        .sort({ date: -1 })
+        .toArray();
+
+      res.send(payments);
+    });
+
     app.get("/user/info/:email", verifyJWT, async (req, res) => {
       const email = req.params.email;
       const user = await usersCollection.findOne({ email });
@@ -934,8 +944,6 @@ async function run() {
     });
 
     // Download invoice by payment ID
-
-    //
     app.get("/payment/:id/invoice", verifyJWT, async (req, res) => {
       try {
         const { id } = req.params;
