@@ -144,36 +144,6 @@ async function run() {
     });
 
     // STAFF SECTION
-
-    app.post(
-      "/admin/create-staff",
-      verifyJWT,
-      verifyAdmin,
-      async (req, res) => {
-        const staff = req.body;
-        if (!staff.email || !staff.name)
-          return res.status(400).send({ error: "name & email required" });
-
-        const now = new Date().toISOString();
-
-        const doc = {
-          name: staff.name,
-          email: staff.email,
-          phone: staff.phone || "",
-          role: "staff",
-          created_at: now,
-        };
-
-        const result = await usersCollection.updateOne(
-          { email: staff.email },
-          { $set: doc },
-          { upsert: true }
-        );
-
-        res.send({ success: true, result });
-      }
-    );
-
     app.get("/admin/staff", verifyJWT, verifyAdmin, async (req, res) => {
       const staff = await usersCollection.find({ role: "staff" }).toArray();
       res.send(staff);
@@ -220,43 +190,48 @@ async function run() {
       verifyJWT,
       verifyAdmin,
       async (req, res) => {
-        const { name, email, phone, password } = req.body;
+        const { name, email, phone, password, image } = req.body;
 
         if (!name || !email || !password) {
           return res
             .status(400)
-            .send({ error: "Name, email & password required" });
+            .send({ error: "Name, email & password are required" });
         }
 
         try {
-          // 1. Create user in Firebase Auth
           const firebaseUser = await admin.auth().createUser({
-            email,
-            password,
+            email: email,
+            password: password,
             displayName: name,
+            photoURL: image || "",
+            emailVerified: false,
           });
 
-          // 2. Add user to MongoDB
           const now = new Date().toISOString();
-          const doc = {
-            _id: firebaseUser.uid,
-            name,
-            email,
+          const staffDoc = {
+            name: name,
+            email: email,
             phone: phone || "",
             role: "staff",
+            image: image || "",
+            firebaseUid: firebaseUser.uid,
             created_at: now,
           };
 
-          await usersCollection.updateOne(
-            { email },
-            { $set: doc },
+          const result = await usersCollection.updateOne(
+            { email: email },
+            { $set: staffDoc },
             { upsert: true }
           );
 
-          res.send({ success: true, firebaseUser });
+          res.send({
+            success: true,
+            result,
+            message: "Staff created successfully",
+          });
         } catch (error) {
-          console.error(error);
-          res.status(500).send({ error: error.code || error.message });
+          console.error("Error creating staff:", error);
+          res.status(500).send({ error: error.message });
         }
       }
     );
@@ -714,100 +689,10 @@ async function run() {
       }
     );
 
-    // app.post("/session-status", verifyJWT, async (req, res) => {
-    //   try {
-    //     const { sessionId } = req.body;
-    //     const userEmail = req.tokenEmail;
-
-    //     const user = await usersCollection.findOne({ email: userEmail });
-    //     if (user?.isBlocked) {
-    //       return res
-    //         .status(403)
-    //         .send({ error: "User is blocked. Payment not allowed." });
-    //     }
-
-    //     // Retrieve Stripe session
-    //     const session = await stripe.checkout.sessions.retrieve(sessionId);
-
-    //     if (session.payment_status !== "paid") {
-    //       return res.send({ success: false, boosted: false });
-    //     }
-
-    //     const metadata = session.metadata;
-
-    //     // Handle issue boost
-    //     if (metadata.type === "issue-boost") {
-    //       const issueId = metadata.issueId;
-    //       const email = metadata.email;
-
-    //       // Update issue priority
-    //       await issuesCollection.updateOne(
-    //         { _id: new ObjectId(issueId) },
-    //         { $set: { priority: "high" } }
-    //       );
-
-    //       // Add timeline entry
-    //       await timelineCollection.insertOne({
-    //         issueId,
-    //         message: "Issue boosted via payment",
-    //         updatedBy: email,
-    //         status: "boosted",
-    //         time: new Date(),
-    //       });
-
-    //       // Record payment
-    //       await paymentsCollection.insertOne({
-    //         email,
-    //         transactionId: session.payment_intent,
-    //         amount: session.amount_total / 100,
-    //         type: "boost",
-    //         issueId,
-    //         status: "complete",
-    //         date: new Date(),
-    //       });
-
-    //       return res.send({ success: true, boosted: true, issueId });
-    //     }
-
-    //     // Handle subscription (if needed)
-    //     if (metadata.type === "premium-subscription") {
-    //       const transactionId = session.payment_intent;
-    //       const existPayment = await paymentsCollection.findOne({
-    //         transactionId,
-    //       });
-
-    //       if (!existPayment) {
-    //         await paymentsCollection.insertOne({
-    //           email: metadata.email,
-    //           transactionId,
-    //           amount: session.amount_total / 100,
-    //           type: "subscription",
-    //           status: "complete",
-    //           date: new Date(),
-    //         });
-
-    //         await usersCollection.updateOne(
-    //           { email: metadata.email },
-    //           { $set: { premium: true } }
-    //         );
-    //       }
-
-    //       return res.send({ success: true, premium: true });
-    //     }
-
-    //     res.send({ success: false });
-    //   } catch (err) {
-    //     console.error("Session Status Error:", err);
-    //     res.status(500).send({ error: err.message });
-    //   }
-    // });
-
-    // Boost Payment
-
-    app.post("/session-status", verifyJWT, async (req, res) => {
+    app.post("/session-status", async (req, res) => {
       try {
         const { sessionId } = req.body;
-        const userEmail = req.tokenEmail;
+
         if (!sessionId) {
           return res
             .status(400)
@@ -854,13 +739,11 @@ async function run() {
         if (type === "premium-subscription") {
           const transactionId = session.payment_intent;
 
-          // Avoid duplicate payment entry
           const existPayment = await paymentsCollection.findOne({
             transactionId,
           });
 
           if (!existPayment) {
-            // Insert payment record
             await paymentsCollection.insertOne({
               email,
               transactionId,
@@ -870,9 +753,8 @@ async function run() {
               date: new Date(),
             });
 
-            // Update user premium status
             await usersCollection.updateOne(
-              { email: userEmail },
+              { email },
               { $set: { premium: true } }
             );
           }
