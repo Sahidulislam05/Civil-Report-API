@@ -242,6 +242,7 @@ async function run() {
         const data = req.body;
         const email = req.tokenEmail;
         const user = await usersCollection.findOne({ email });
+
         if (!user) {
           return res
             .status(403)
@@ -258,10 +259,13 @@ async function run() {
           }
         }
 
+        // Default fields
         data.status = "pending";
         data.priority = data.priority || "normal";
         data.email = email;
         data.createdAt = new Date();
+        data.upvotes = [];
+        data.upvoteCount = 0;
 
         const result = await issuesCollection.insertOne(data);
 
@@ -287,14 +291,25 @@ async function run() {
           category,
           search,
         } = req.query;
+
         const query = {};
 
+        // filters
         if (status) query.status = status;
         if (priority) query.priority = priority;
         if (category) query.category = category;
-        if (search) query.title = { $regex: search, $options: "i" };
+
+        // 🔍 search (multiple fields)
+        if (search) {
+          query.$or = [
+            { title: { $regex: search, $options: "i" } },
+            { category: { $regex: search, $options: "i" } },
+            { location: { $regex: search, $options: "i" } },
+          ];
+        }
 
         const skip = (parseInt(page) - 1) * parseInt(limit);
+
         const total = await issuesCollection.countDocuments(query);
 
         const issues = await issuesCollection
@@ -306,8 +321,8 @@ async function run() {
 
         res.send({
           total,
-          page: parseInt(page),
-          limit: parseInt(limit),
+          page: Number(page),
+          limit: Number(limit),
           issues,
         });
       } catch (err) {
@@ -402,18 +417,31 @@ async function run() {
           });
           if (!issue) return res.status(404).send({ error: "Issue not found" });
 
+          // Prevent self-upvote
           if (issue.email === email)
             return res.status(403).send({ error: "Cannot upvote own issue" });
 
-          const hasUpvoted = issue.upvotes?.includes(email);
-          if (hasUpvoted)
+          // Ensure upvotes array exists
+          if (!Array.isArray(issue.upvotes)) {
+            await issuesCollection.updateOne(
+              { _id: new ObjectId(id) },
+              { $set: { upvotes: [], upvoteCount: issue.upvoteCount || 0 } }
+            );
+            issue.upvotes = [];
+            issue.upvoteCount = issue.upvoteCount || 0;
+          }
+
+          // Already upvoted check
+          if (issue.upvotes.includes(email))
             return res.status(403).send({ error: "Already upvoted" });
 
-          const result = await issuesCollection.updateOne(
+          // Perform upvote
+          await issuesCollection.updateOne(
             { _id: new ObjectId(id) },
             { $push: { upvotes: email }, $inc: { upvoteCount: 1 } }
           );
 
+          // Add timeline entry
           await timelineCollection.insertOne({
             issueId: id,
             message: `Upvoted by ${email}`,
@@ -1006,6 +1034,6 @@ run().catch((err) => console.error(err));
 
 app.get("/", (req, res) => res.send("Public Report API Running..."));
 
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+// app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 module.exports = app;
