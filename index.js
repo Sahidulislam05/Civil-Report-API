@@ -241,7 +241,6 @@ async function run() {
       try {
         const data = req.body;
         const email = req.tokenEmail;
-
         const user = await usersCollection.findOne({ email });
         if (!user) {
           return res
@@ -252,7 +251,7 @@ async function run() {
         // Free user limit
         if (user.role === "citizen" && !user.premium) {
           const count = await issuesCollection.countDocuments({ email });
-          if (count > 3) {
+          if (count >= 3) {
             return res
               .status(403)
               .send({ error: true, message: "Free user limit reached!" });
@@ -1007,6 +1006,6 @@ run().catch((err) => console.error(err));
 
 app.get("/", (req, res) => res.send("Public Report API Running..."));
 
-// app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 module.exports = app;
