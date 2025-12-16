@@ -715,7 +715,7 @@ async function run() {
               email,
             },
             success_url: `${process.env.CLIENT_DOMAIN}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
-            cancel_url: `${process.env.CLIENT_DOMAIN}/profile?success=false`,
+            cancel_url: `${process.env.CLIENT_DOMAIN}/dashboard/profile?success=false`,
           });
 
           res.send({ url: session.url });
@@ -730,7 +730,6 @@ async function run() {
     app.post("/session-status", async (req, res) => {
       try {
         const { sessionId } = req.body;
-
         if (!sessionId) {
           return res
             .status(400)
@@ -762,7 +761,7 @@ async function run() {
           });
 
           await paymentsCollection.insertOne({
-            email: userEmail,
+            email,
             transactionId: session.payment_intent,
             amount: session.amount_total / 100,
             type: "boost",
