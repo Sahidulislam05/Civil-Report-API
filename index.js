@@ -729,6 +729,46 @@ async function run() {
       }
     );
 
+    app.post(
+      "/create-checkout-session-bd",
+      verifyJWT,
+      verifyBlockedUser,
+      async (req, res) => {
+        try {
+          const email = req.tokenEmail;
+          const session = await stripe.checkout.sessions.create({
+            payment_method_types: ["card"],
+            line_items: [
+              {
+                price_data: {
+                  currency: "bdt",
+                  product_data: {
+                    name: "Premium Subscription",
+                    description: "Unlimited issue submission access",
+                  },
+                  unit_amount: 1000 * 100,
+                },
+                quantity: 1,
+              },
+            ],
+            mode: "payment",
+            customer_email: email,
+            metadata: {
+              type: "premium-subscription",
+              email,
+            },
+            success_url: `${process.env.CLIENT_DOMAIN_BD}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+            cancel_url: `${process.env.CLIENT_DOMAIN_BD}/dashboard/profile?success=false`,
+          });
+
+          res.send({ url: session.url });
+        } catch (error) {
+          console.error("Checkout Error:", error);
+          res.status(500).send({ error: error.message });
+        }
+      }
+    );
+
     // 2 Payment session status
     app.post("/session-status", async (req, res) => {
       try {
@@ -853,6 +893,59 @@ async function run() {
             },
             success_url: `${process.env.CLIENT_DOMAIN}/boost-success?session_id={CHECKOUT_SESSION_ID}`,
             cancel_url: `${process.env.CLIENT_DOMAIN}/issue/${id}`,
+          });
+
+          res.send({ url: session.url });
+        } catch (err) {
+          console.error("Boost Checkout Error:", err);
+          res.status(500).send({ error: err.message });
+        }
+      }
+    );
+
+    // 2nd app
+    app.post(
+      "/issues/:id/boost-checkout-bd",
+      verifyJWT,
+      verifyBlockedUser,
+      async (req, res) => {
+        try {
+          const { id } = req.params;
+          const email = req.tokenEmail;
+
+          // Find the issue
+          const issue = await issuesCollection.findOne({
+            _id: new ObjectId(id),
+          });
+          if (!issue) return res.status(404).send({ error: "Issue not found" });
+          if (issue.priority === "high")
+            return res.status(400).send({ error: "Issue already boosted" });
+
+          // Create Stripe Checkout Session
+          const session = await stripe.checkout.sessions.create({
+            payment_method_types: ["card"],
+            line_items: [
+              {
+                price_data: {
+                  currency: "bdt",
+                  product_data: {
+                    name: "Issue Boost",
+                    description: `Boost issue: ${issue.title}`,
+                  },
+                  unit_amount: 100 * 100, // 100 BDT
+                },
+                quantity: 1,
+              },
+            ],
+            mode: "payment",
+            customer_email: email,
+            metadata: {
+              type: "issue-boost",
+              issueId: id,
+              email, // important for timeline
+            },
+            success_url: `${process.env.CLIENT_DOMAIN_BD}/boost-success?session_id={CHECKOUT_SESSION_ID}`,
+            cancel_url: `${process.env.CLIENT_DOMAIN_BD}/issue/${id}`,
           });
 
           res.send({ url: session.url });
